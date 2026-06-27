@@ -1,0 +1,50 @@
+# Core Framework
+fastapi==0.116.1
+uvicorn[standard]==0.35.0
+python-multipart==0.0.20
+
+# Database
+pymongo==4.13.2
+
+# Security & Authentication
+passlib[argon2]==1.7.4
+argon2-cffi==25.1.0
+python-jose[cryptography]==3.5.0
+cryptography==45.0.5
+
+# Encryption Libraries
+pycryptodome==3.23.0
+liboqs-python==0.14.0
+jsonschema==4.21.1
+
+# Email
+python-dotenv==1.1.1
+aiosmtplib==3.0.1
+
+# File Storage
+minio==7.2.0
+
+# Validation
+pydantic[email]==2.11.7
+pydantic-settings==2.6.1
+email-validator==2.1.0
+
+# OTP
+pyotp==2.9.0
+
+# Additional Dependencies
+requests==2.32.3
+python-decouple==3.8
+
+# Development & Testing
+pytest==8.2.0
+pytest-asyncio==0.24.0
+httpx==0.28.0
+
+# Cloud Key Management (optional)
+# Uncomment based on your cloud provider:
+# azure-keyvault-secrets==4.7.0  # For Azure Key Vault
+# azure-identity==1.15.0          # For Azure Key Vault
+# boto3==1.38.39                  # For AWS KMS
+# hvac==2.1.0                     # For HashiCorp Vault
+# PyKCS11==1.5.14                 # For local HSM
