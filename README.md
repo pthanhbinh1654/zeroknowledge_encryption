@@ -1,255 +1,331 @@
 # 🔐 Zero-Knowledge File Encryption System
 
-> **Post-Quantum Zero-Knowledge File Encryption System**. All encryption, decryption, and signing operations occur 100% on the client side (browser). The server acts solely as a "blind" storage vault for encrypted payloads and non-sensitive metadata.
+> End-to-end encrypted file storage with **post-quantum cryptography**. Encryption, decryption, and digital signing are performed **100% in the browser** — the server never sees plaintext data or private keys.
 
-Vietnamese version: 🇻🇳 [Tiếng Việt](./README-vi.md)
+🇻🇳 [Tiếng Việt](./README-vi.md)
 
-[![Docker](https://img.shields.io/badge/Docker-ready-2496ED?logo=docker&style=flat-flat)](docker-compose.yml)
-[![FastAPI](https://img.shields.io/badge/FastAPI-0.116-009688?logo=fastapi&style=flat-flat)](backend/)
-[![React](https://img.shields.io/badge/React-18-61DAFB?logo=react&style=flat-flat)](frontend/)
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg?style=flat-flat)](LICENSE)
+[![Docker](https://img.shields.io/badge/Docker-ready-2496ED?logo=docker&style=flat-square)](docker-compose.yml)
+[![FastAPI](https://img.shields.io/badge/FastAPI-0.116.1-009688?logo=fastapi&style=flat-square)](backend/)
+[![React](https://img.shields.io/badge/React-18-61DAFB?logo=react&style=flat-square)](frontend/)
+[![Python](https://img.shields.io/badge/Python-3.11-3776AB?logo=python&style=flat-square)](backend/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg?style=flat-square)](LICENSE)
 
 ---
 
-## 1. The Problem & The Solution
+## Table of Contents
+1. [Why This Exists](#1-why-this-exists)
+2. [System Architecture](#2-system-architecture)
+3. [Encryption Flows](#3-encryption-flows)
+4. [Key Features](#4-key-features)
+5. [Tech Stack](#5-tech-stack)
+6. [Quick Start](#6-quick-start)
+7. [Project Structure](#7-project-structure)
+8. [Testing](#8-testing)
 
-When storing files on traditional cloud storage providers (such as Google Drive, Dropbox, or standard AWS S3):
-1. **Loss of Key Control:** Data is encrypted server-side (SSE), meaning the cloud provider holds the decryption keys. If their infrastructure is compromised or subpoenaed, your data is exposed.
-2. **The Quantum Threat:** Current public-key cryptography (such as RSA, ECC, Diffie-Hellman) used for key exchange and digital signatures can be completely broken in the near future by Shor's algorithm running on quantum computers.
+---
 
-### Our Solution:
-* **Zero-Knowledge Architecture:** Encryption keys are derived directly from the user's password using the memory-hard **Argon2id** hashing algorithm directly in the browser. This key exists only temporarily in the client device's RAM and is **never** sent over the network or stored on the backend.
-* **Post-Quantum Cryptography (PQC):** Integrated hybrid quantum-resistant key encapsulation (**Kyber1024** + X25519) and quantum-resistant digital signatures (**Dilithium3/5** + Ed25519) to secure files against future decryption attacks ("Harvest Now, Decrypt Later").
+## 1. Why This Exists
+
+**Problem:** Mainstream cloud storage (Google Drive, Dropbox, S3) encrypts your files using *their* keys. If their systems are breached or subpoenaed, your data is exposed. Worse, all current public-key cryptography (RSA, ECC, Diffie-Hellman) will be breakable by quantum computers via Shor's algorithm — a well-funded adversary can record ciphertext today and decrypt it later ("Harvest Now, Decrypt Later").
+
+**Solution in two principles:**
+
+| Principle | What it means |
+|---|---|
+| **Zero-Knowledge** | Encryption keys derive from your password (Argon2id, client-side). Keys never leave your device. |
+| **Post-Quantum Ready** | Key exchange uses **Kyber1024 + X25519** (hybrid). Signatures use **Dilithium3 + Ed25519** (hybrid). Both are NIST PQC standards. |
 
 ---
 
 ## 2. System Architecture
 
-The diagram below illustrates the absolute separation between the sensitive data zone (Client-side) and the storage zone (Server-side):
+The architecture enforces a hard boundary: **all sensitive operations happen in the browser, never on the server**.
 
 ```mermaid
 graph TB
-    subgraph Client [Secure Client Zone - Browser]
-        A[Original File / Plaintext] -->|Encrypt & Sign| B(Client-Side Encryption Engine)
-        M[User Passphrase] -->|Argon2id| K[Symmetric Encryption Key]
-        K --> B
-        B -->|Output Only| C[Ciphertext + Digital Signature]
+    subgraph Client["🖥️ Client — Browser (Secure Zone)"]
+        direction TB
+        PW[/"User Password"/] --> KDF["Argon2id KDF\n(WebAssembly)"]
+        KDF --> KEK["Key Encrypting Key (KEK)\n[never leaves RAM]"]
+        FILE[/"Plaintext File"/] --> ENC["AES-256-GCM / ChaCha20-Poly1305\n+ Kyber1024 Key Encapsulation"]
+        KEK --> ENC
+        ENC --> SIG["Dilithium3 / Ed25519\nDigital Signature"]
+        SIG --> OUT["Ciphertext + Encrypted DEK\n+ Signature + Salt/IV"]
     end
 
-    subgraph Transport [Network Transport]
-        C -->|HTTPS / SSL| D[API Request]
+    subgraph Transport["🔒 HTTPS Transport"]
+        OUT -->|"Encrypted payload only"| API
     end
 
-    subgraph Server [Backend Storage Zone - Docker]
-        D --> E[FastAPI Gateway]
-        E -->|Verify JWT & hCaptcha| F{Valid?}
-        F -->|Yes| G[MinIO S3 Store]
-        F -->|Yes| H[MongoDB Metadata]
-        G -->|Store Only| I[Ciphertext Chunks]
-        H -->|Store Only| J[Salt, IV, Algorithm, Signatures]
+    subgraph Server["🗄️ Server — Docker (Blind Storage)"]
+        direction TB
+        API["FastAPI Gateway\n(JWT + hCaptcha validation)"]
+        API --> MINIO["MinIO S3\nCiphertext chunks"]
+        API --> MONGO["MongoDB 6.0\nSalt · IV · Encrypted DEK\nSignature · Metadata"]
     end
 
-    style Client fill:#e1f5fe,stroke:#0288d1,stroke-width:2px
-    style Server fill:#efebe9,stroke:#5d4037,stroke-width:2px
+    style Client fill:#e3f2fd,stroke:#1565c0,stroke-width:2px
+    style Server fill:#fbe9e7,stroke:#bf360c,stroke-width:2px
+    style Transport fill:#f1f8e9,stroke:#558b2f,stroke-width:1px
 ```
+
+**What the server stores vs. what it cannot access:**
+
+| Stored on Server | Never on Server |
+|---|---|
+| Ciphertext (binary blob) | Plaintext file |
+| Salt, IV, algorithm identifiers | Decryption key |
+| Encrypted DEK | User password |
+| Digital signature | Argon2id-derived KEK |
 
 ---
 
-## 3. Core Processing Flows
+## 3. Encryption Flows
 
-### File Encryption & Upload Flow
-Preparing encrypted payloads happens entirely in the browser's memory before initiating any network connections:
+### Upload — Encrypt & Store
 
 ```mermaid
 sequenceDiagram
     autonumber
-    actor User as User
-    participant Client as Client (React/TS)
-    participant Backend as FastAPI Backend
-    participant MinIO as MinIO S3 Storage
+    actor User
+    participant Browser as Browser (React/TS)
+    participant API as FastAPI (Port 8000)
+    participant MinIO as MinIO S3 (Port 9000)
+    participant DB as MongoDB (Port 27017)
 
-    User->>Client: 1. Select file & Enter password
-    Note over Client: Derive Key Encrypting Key (KEK) from password via Argon2id (using random Salt)
-    Note over Client: Generate random ephemeral Data Encryption Key (DEK)
-    Note over Client: Encrypt file content using DEK (AES-GCM or ChaCha20-Poly1305)
-    Note over Client: Encrypt DEK using KEK
-    Note over Client: Digitally sign ciphertext using Dilithium3/Ed25519
-    Client->>Backend: 2. POST /api/encrypted/upload (Ciphertext + Metadata)
-    Note over Backend: Validate session JWT token<br/>Save non-sensitive metadata (Salt, IV, Encrypted DEK, Signature) to MongoDB
-    Backend->>MinIO: 3. Stream ciphertext chunks to S3 Bucket
-    MinIO-->>Backend: OK
-    Backend-->>Client: 4. Return success status with File ID
-    Client-->>User: Display successful upload UI
+    User->>Browser: Select file + enter password
+    Note over Browser: Generate random Salt (16 bytes) + IV (12 bytes)
+    Note over Browser: Derive KEK via Argon2id(password, salt)
+    Note over Browser: Generate random DEK (256-bit)
+    Note over Browser: Encrypt file: AES-256-GCM(DEK) or ChaCha20-Poly1305(DEK)
+    Note over Browser: Encrypt DEK with KEK
+    Note over Browser: Sign ciphertext: Dilithium3 + Ed25519 (hybrid)
+    Browser->>API: POST /api/encrypted/upload {ciphertext, salt, iv, enc_dek, sig}
+    API->>API: Validate JWT session token
+    API->>MinIO: Stream ciphertext chunks to bucket
+    API->>DB: Save metadata {salt, iv, enc_dek, signature, file_id}
+    API-->>Browser: 200 OK — file_id
+    Browser-->>User: Upload complete ✓
 ```
 
-### File Download & Decryption Flow
-To retrieve and read the files, the client downloads the encrypted payload and decrypts it locally:
+### Download — Retrieve & Decrypt
 
 ```mermaid
 sequenceDiagram
     autonumber
-    actor User as User
-    participant Client as Client (React/TS)
-    participant Backend as FastAPI Backend
-    participant MinIO as MinIO S3 Storage
+    actor User
+    participant Browser as Browser (React/TS)
+    participant API as FastAPI (Port 8000)
+    participant MinIO as MinIO S3 (Port 9000)
+    participant DB as MongoDB (Port 27017)
 
-    User->>Client: 1. Request file download (File ID) & Enter password
-    Client->>Backend: 2. GET /api/encrypted/download/{file_id}
-    Backend->>MinIO: Retrieve ciphertext chunks
-    MinIO-->>Backend: Ciphertext
-    Backend-->>Client: 3. Return Ciphertext + Metadata (Salt, IV, Encrypted DEK, Signature)
-    Note over Client: Verify Dilithium/Ed25519 signature to guarantee authenticity
-    Note over Client: Derive KEK from user password using Salt from metadata via Argon2id
-    Note over Client: Decrypt DEK using KEK
-    Note over Client: Decrypt ciphertext using DEK and IV
-    Client-->>User: 4. Trigger browser download of original file (Plaintext)
+    User->>Browser: Request file + enter password
+    Browser->>API: GET /api/encrypted/download/{file_id}
+    API->>DB: Fetch metadata {salt, iv, enc_dek, signature}
+    API->>MinIO: Fetch ciphertext chunks
+    API-->>Browser: Ciphertext + metadata
+    Note over Browser: Verify Dilithium3 + Ed25519 signature
+    Note over Browser: Derive KEK via Argon2id(password, salt from metadata)
+    Note over Browser: Decrypt DEK using KEK
+    Note over Browser: Decrypt ciphertext using DEK + IV
+    Browser-->>User: Trigger browser download (plaintext file)
 ```
 
 ---
 
-## 4. Notable Features
+## 4. Key Features
 
-* **Large File Streaming (Chunked Encryption):** For files larger than 50MB, the client automatically splits the file into 1MB–10MB chunks, encrypts them on-the-fly, and streams them to the backend to prevent browser tab crashes from memory overload.
-* **Directory Structure Preservation:** Easily drag and drop folders. The system compresses folder structures into ZIP packages at the client level, encrypts the ZIP, and unpacks the directory layout automatically upon successful decryption.
-* **Multi-Factor Authentication (2FA) & Rate Limiting:** Built-in email-based OTP 2FA, brute-force protection (lockout after 5 failed login attempts), and mandatory **hCaptcha** integration for suspicious requests.
-* **Offline Portable Packages:** Export encrypted files with their metadata into a standalone `.encrypted` package. Users can decrypt these packages locally without needing access to the backend API.
+### Large File Support (Chunked Streaming)
+Files over **50 MB** are automatically split into **1 MB – 10 MB chunks**. Each chunk is encrypted independently and streamed to the backend, preventing browser memory overload.
 
----
+### Folder Encryption
+Drag and drop an entire folder. The browser compresses it into a ZIP, encrypts the archive, and restores the full directory tree on decryption.
 
-## 5. Tech Stack & Engineering Architecture
+### Multi-Factor Authentication (2FA)
+- Email-based OTP on every login
+- Account lockout after **5 consecutive failed attempts**
+- Mandatory **hCaptcha** challenge on suspicious requests
 
-The application is structured as a containerized, service-oriented architecture:
-
-* **Frontend:** React 18 (TypeScript), Vite (high-performance build tool), Material-UI (UI component library), Tailwind CSS (responsive styling).
-* **Client Cryptography Core:**
-  * `Web Crypto API` for native hardware-accelerated symmetric AES-GCM operations.
-  * `@noble/ciphers` & `@noble/post-quantum` for pure JS/TS implementations of post-quantum cryptography (Kyber1024, Dilithium).
-  * `libsodium-wrappers` for industry-standard primitives (ChaCha20-Poly1305, Ed25519).
-  * `argon2-browser` WebAssembly (Wasm) port for high-performance Argon2id password-based key derivation.
-* **Backend:** FastAPI (Python 3.11) async gateway, utilizing Pydantic v2 for data schema modeling and validation.
-* **Database & Storage:**
-  * **MongoDB 6.0:** Holds accounts, audit logs, and file metadata.
-  * **MinIO S3 Store:** Fast, private S3-compatible local object storage server.
+### Offline Portable Packages
+Export any encrypted file as a `.encrypted` bundle (ciphertext + metadata). The bundle can be decrypted locally without a server connection.
 
 ---
 
-## 6. Getting Started (Docker Compose)
+## 5. Tech Stack
 
-The only requirements to run the entire stack are **Docker** and **Docker Compose**.
+### Services (Docker Compose)
 
-### Step 1: Clone the repository
+| Service | Image / Stack | Port |
+|---|---|---|
+| Frontend | React 18 + TypeScript + Vite → Nginx | `3000` |
+| Backend API | FastAPI 0.116.1 + Python 3.11 (async) | `8000` |
+| Object Storage | MinIO (S3-compatible) | `9000` API · `9001` UI |
+| Database | MongoDB 6.0 | `27017` |
+
+### Client-Side Cryptography
+
+| Library | Role |
+|---|---|
+| `Web Crypto API` (native) | AES-256-GCM symmetric encryption (hardware-accelerated) |
+| `argon2-browser` (WASM) | Argon2id password-based key derivation |
+| `@noble/post-quantum` | Kyber1024 (KEM) + Dilithium3 (signature) — NIST PQC |
+| `libsodium-wrappers` | X25519 (ECDH) + Ed25519 (signature) + ChaCha20-Poly1305 |
+| `@noble/ciphers` | Additional symmetric cipher implementations |
+
+### Backend Libraries
+
+| Library | Role |
+|---|---|
+| `liboqs-python 0.14.0` | Open Quantum Safe — server-side PQC operations |
+| `argon2-cffi 25.1.0` | Password hashing (user account security) |
+| `pydantic v2` | Data validation and environment config |
+| `python-jose` | JWT token generation and verification |
+| `minio 7.2.0` | MinIO S3 SDK |
+| `pyotp` | TOTP/HOTP OTP generation |
+| `aiosmtplib` | Async email delivery (OTP) |
+
+---
+
+## 6. Quick Start
+
+**Prerequisites:** Docker and Docker Compose installed.
+
+### Step 1 — Clone
+
 ```bash
 git clone https://github.com/<your-username>/zero-knowledge-pqc-file-encryption.git
 cd zero-knowledge-pqc-file-encryption
 ```
 
-### Step 2: Configure environment variables
-Copy the template file:
+### Step 2 — Configure environment
+
 ```bash
 cp .env.example .env
 ```
-Open `.env` and fill in the required parameters:
-* `SECRET_KEY`: Used to sign JWTs. Generate a strong random key:
-  ```bash
-  python -c "import secrets; print(secrets.token_hex(32))"
-  ```
-* `MONGO_ROOT_PASSWORD`: Root credentials for the MongoDB instance.
-* `MINIO_ACCESS_KEY` & `MINIO_SECRET_KEY`: Credentials for access to the MinIO console and S3 storage API.
-* `SMTP_USERNAME` & `SMTP_PASSWORD`: Your SMTP details (e.g., Gmail App Password) for sending OTP emails.
 
-### Step 3: Run the stack
-Build and start all services in detached mode:
+Edit `.env` and set:
+
+| Variable | Description |
+|---|---|
+| `SECRET_KEY` | JWT signing secret — generate with `python -c "import secrets; print(secrets.token_hex(32))"` |
+| `MONGO_ROOT_PASSWORD` | MongoDB root password |
+| `MINIO_ACCESS_KEY` / `MINIO_SECRET_KEY` | MinIO credentials |
+| `SMTP_USERNAME` / `SMTP_PASSWORD` | SMTP account for OTP emails (e.g. Gmail App Password) |
+
+### Step 3 — Start
+
 ```bash
 docker compose up -d --build
 ```
 
-### Step 4: Access services
-Once containers display a `healthy` status (approx. 1-2 minutes on first run):
+Containers start in ~1–2 minutes (first run pulls images and builds). Monitor with:
 
-* **User Interface (Frontend):** [http://localhost:3000](http://localhost:3000)
-* **Interactive API Docs (FastAPI):** [http://localhost:8000/docs](http://localhost:8000/docs)
-* **Object Storage Console (MinIO):** [http://localhost:9001](http://localhost:9001)
+```bash
+docker compose ps          # check health status
+docker compose logs -f     # stream all logs
+```
 
-### Commands reference:
-* Check service status: `docker compose ps`
-* Monitor logs: `docker compose logs -f`
-* Stop services: `docker compose down`
-* Reset all data (wipes volumes): `docker compose down -v`
+### Step 4 — Open
+
+| Service | URL |
+|---|---|
+| Web App | http://localhost:3000 |
+| API Docs (Swagger) | http://localhost:8000/docs |
+| MinIO Console | http://localhost:9001 |
+
+### Teardown
+
+```bash
+docker compose down          # stop, keep data volumes
+docker compose down -v       # stop + delete all volumes (full reset)
+```
 
 ---
 
-## 7. Directory Structure & Components
+## 7. Project Structure
 
 ```
 .
-├── backend/                   # 🐍 FastAPI Backend Application
-│   ├── main.py                # Main entry point, CORS & Router registration
-│   ├── requirements.txt       # Python backend dependencies
-│   ├── Dockerfile             # Multi-stage production Python 3.11-slim
-│   ├── app/
-│   │   ├── api/               # API route handlers
-│   │   │   ├── auth.py        # Authentication & OTP flows
-│   │   │   ├── encrypted_file.py # File uploads, downloads, deletions
-│   │   │   └── ...
-│   │   ├── core/              # Global system configuration
-│   │   │   ├── config.py      # Pydantic environment configuration
-│   │   │   └── minio_client.py# S3 client helper & health checks
-│   │   ├── services/          # Business logic layer
-│   │   │   ├── encrypted_file_service.py
-│   │   │   └── ...
-│   │   └── database.py        # MongoDB connection setup
-│   └── scripts/
-│       └── setup_minio.py     # Script to automate S3 bucket creation
+├── backend/                        # FastAPI application (Python 3.11)
+│   ├── main.py                     # CORS configuration + router registration
+│   ├── requirements.txt            # Python dependencies (50 packages)
+│   ├── Dockerfile                  # Multi-stage build, python:3.11-slim
+│   └── app/
+│       ├── api/                    # HTTP route handlers (9 modules)
+│       │   ├── auth.py             # Register · login · OTP · password reset
+│       │   ├── encrypted_file.py   # Upload · download · delete · list files
+│       │   ├── crypto.py           # Server-side PQC key operations
+│       │   ├── security.py         # Audit log · device fingerprinting
+│       │   ├── analytics.py        # Per-user encryption usage analytics
+│       │   ├── dashboard.py        # Admin dashboard metrics
+│       │   ├── activity.py         # Activity feed
+│       │   └── user.py             # User profile management
+│       ├── core/
+│       │   ├── config.py           # Pydantic settings (env validation)
+│       │   ├── security.py         # JWT creation · Argon2id password hashing
+│       │   └── minio_client.py     # MinIO S3 client + health checks
+│       ├── services/               # Business logic layer
+│       │   ├── encrypted_file_service.py  # Chunked file streaming
+│       │   ├── email_service.py    # OTP email composition + delivery
+│       │   └── otp_service.py      # OTP generation · storage · validation
+│       └── database.py             # MongoDB async connection setup
 │
-├── frontend/                  # ⚛️ React + TypeScript Frontend Application
+├── frontend/                       # React 18 + TypeScript (Vite)
 │   ├── src/
-│   │   ├── main.tsx           # React mounting point
-│   │   ├── App.tsx            # Main router and theme configuration
-│   │   ├── crypto/            # ⭐ Client-side cryptography core logic
-│   │   │   ├── zero_knowledge.ts     # AES-GCM & Argon2id wrapper
-│   │   │   ├── chunked_encryption.ts # Chunked streaming utilities
-│   │   │   └── advanced_features.ts  # Kyber1024 & Dilithium signing
-│   │   └── ...
-│   ├── Dockerfile             # Production build on lightweight Nginx image
-│   └── nginx.conf             # Nginx reverse-proxy & security headers config
+│   │   ├── crypto/                 # ⭐ Client-side crypto core
+│   │   │   ├── zero_knowledge.ts   # AES-256-GCM · Argon2id key derivation
+│   │   │   ├── advanced_features.ts # Kyber1024 · Dilithium3 · Ed25519
+│   │   │   └── chunked_encryption.ts # Chunk splitting + streaming logic
+│   │   ├── pages/                  # Feature screens (15 pages)
+│   │   ├── components/             # Reusable UI components (30 components)
+│   │   ├── services/               # Axios API wrappers (6 modules)
+│   │   └── __tests__/              # Cryptographic unit tests
+│   ├── Dockerfile                  # Vite build → production Nginx image
+│   └── nginx.conf                  # Reverse proxy + security headers
 │
-├── docs/                      # 📚 System documentation
-│   ├── API_DOCUMENTATION.md   # API specification reference
-│   ├── SECURITY_GUIDE.md      # In-depth security architecture & Threat Model
-│   └── SYSTEM-OVERVIEW.md     # High-level architecture overview
+├── docs/
+│   ├── API_DOCUMENTATION.md        # Full API endpoint reference
+│   ├── SECURITY_GUIDE.md           # Threat model + cryptographic design
+│   └── SYSTEM-OVERVIEW.md          # Architecture overview
 │
 ├── scripts/
-│   ├── deploy.sh              # Automated deployment shell script
-│   └── mongo-init.js          # DB index initialization for MongoDB
+│   ├── deploy.sh                   # Automated deployment script
+│   └── mongo-init.js               # MongoDB index initialization
 │
-├── docker-compose.yml         # Main Docker Compose orchestration file
-└── .gitignore                 # Excludes build artifacts & secrets from git
+├── docker-compose.yml              # 4-service orchestration
+└── .env.example                    # Environment variable template
 ```
 
 ---
 
-## 8. Development & Testing
+## 8. Testing
 
-To run quality checks on the code:
+### Frontend — Cryptographic Unit Tests
 
-### Frontend Unit & Cryptographic Tests:
-Tests are located under `frontend/src/__tests__` and mock cryptographic engines to verify performance, algorithms, and data integrity:
+Tests live in `frontend/src/__tests__/` and verify algorithm correctness and data integrity without network calls:
+
 ```bash
 cd frontend
 npm install
-npm run test:run  # Execute cryptographic tests once
+npm run test:run
 ```
 
-### Backend Integration Tests:
+### Backend — API Integration Tests
+
 ```bash
 cd backend
 python -m venv .venv
+# Linux/macOS:
 source .venv/bin/activate
+# Windows:
+.venv\Scripts\activate
+
 pip install -r requirements.txt
-pytest -v                  # Run backend tests
+pytest -v
 ```
 
 ---
 
-## 🛡️ Security Disclaimer
-*This repository contains an academic research project. While cryptographic principles have been carefully designed and implemented, we strongly recommend performing comprehensive code reviews, penetration testing, and vulnerability assessments before using this codebase in a production environment containing sensitive user data.*
+## 🛡️ Security Notice
+
+This is an **academic research project** (university thesis / capstone). The cryptographic design follows established standards (NIST FIPS 203/204, RFC 9106 for Argon2). **Do not deploy this in a production environment handling sensitive user data without a professional security audit and penetration test.**
